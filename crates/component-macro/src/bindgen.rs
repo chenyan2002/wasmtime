@@ -8,7 +8,7 @@ use syn::parse::{Error, Parse, ParseStream, Result};
 use syn::punctuated::Punctuated;
 use syn::{Token, braced, token};
 use wasmtime_wit_bindgen::{
-    AsyncConfig, CallStyle, Opts, Ownership, TrappableError, TrappableImports,
+    AsyncConfig, CallStyle, Opts, Ownership, ReplayMode, TrappableError, TrappableImports,
 };
 use wit_parser::{PackageId, Resolve, UnresolvedPackageGroup, WorldId};
 
@@ -120,6 +120,7 @@ impl Parse for Config {
                     }
                     Opt::Tracing(val) => opts.tracing = val,
                     Opt::VerboseTracing(val) => opts.verbose_tracing = val,
+                    Opt::Replay(mode) => opts.replay = mode,
                     Opt::Debug(val) => opts.debug = val,
                     Opt::Async(val, span) => {
                         if async_configured {
@@ -283,6 +284,7 @@ mod kw {
     syn::custom_keyword!(path);
     syn::custom_keyword!(tracing);
     syn::custom_keyword!(verbose_tracing);
+    syn::custom_keyword!(replay);
     syn::custom_keyword!(trappable_error_type);
     syn::custom_keyword!(world);
     syn::custom_keyword!(ownership);
@@ -308,6 +310,7 @@ enum Opt {
     Inline(syn::LitStr),
     Tracing(bool),
     VerboseTracing(bool),
+    Replay(ReplayMode),
     Async(AsyncConfig, Span),
     TrappableErrorType(Vec<TrappableError>),
     Ownership(Ownership),
@@ -368,6 +371,24 @@ impl Parse for Opt {
             input.parse::<kw::verbose_tracing>()?;
             input.parse::<Token![:]>()?;
             Ok(Opt::VerboseTracing(input.parse::<syn::LitBool>()?.value))
+        } else if l.peek(kw::replay) {
+            input.parse::<kw::replay>()?;
+            input.parse::<Token![:]>()?;
+            let mode = input.parse::<syn::Ident>()?;
+            let mode = match mode.to_string().as_str() {
+                "record" => ReplayMode::Record,
+                "replay" => ReplayMode::Replay,
+                "noop" | "" => ReplayMode::Noop,
+                name => {
+                    return Err(Error::new(
+                        mode.span(),
+                        format!(
+                            "unrecognized replay mode: `{name}`; expected `record`, `replay`, or `noop`"
+                        ),
+                    ));
+                }
+            };
+            Ok(Opt::Replay(mode))
         } else if l.peek(Token![async]) {
             let span = input.parse::<Token![async]>()?.span;
             input.parse::<Token![:]>()?;

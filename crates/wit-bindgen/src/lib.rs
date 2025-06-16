@@ -131,6 +131,8 @@ pub struct Opts {
     /// return values which contain dynamically-sized `list` values.
     pub verbose_tracing: bool,
 
+    pub replay: ReplayMode,
+
     /// Whether or not to use async rust functions and traits.
     pub async_: AsyncConfig,
 
@@ -201,6 +203,13 @@ pub struct Opts {
     pub debug: bool,
 }
 
+#[derive(Default, Debug, Clone)]
+pub enum ReplayMode {
+    Record,
+    Replay,
+    #[default]
+    Noop,
+}
 #[derive(Debug, Clone)]
 pub struct TrappableError {
     /// Full path to the error, such as `wasi:io/streams/error`.

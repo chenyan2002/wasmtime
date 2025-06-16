@@ -267,6 +267,9 @@ pub(crate) use self::store::ComponentStoreData;
 ///     // This option defaults to `false`.
 ///     tracing: true,
 ///
+///     // This option defauts to `noop`.
+///     replay: record,
+///
 ///     // Include all arguments and return values in the tracing output,
 ///     // including values containing lists, which may be very large.
 ///     //

@@ -30,6 +30,18 @@ macro_rules! gentest {
                     }
                 });
             }
+            mod record {
+                wasmtime::component::bindgen!({
+                    path: $path,
+                    replay: record
+                });
+            }
+            mod replay {
+                wasmtime::component::bindgen!({
+                    path: $path,
+                    replay: replay
+                });
+            }
         }
     };
 }
