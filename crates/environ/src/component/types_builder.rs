@@ -253,10 +253,7 @@ impl ComponentTypesBuilder {
         Ok(ComponentExtern {
             ty: self.convert_component_entity_type(types, ty.ty)?,
             data: ComponentExternData {
-                implements: ty
-                    .implements
-                    .as_deref()
-                    .map(|s| full_name(s, ty.version_suffix.as_deref()).into_owned()),
+                implements: ty.full_implements().map(|s| s.into_owned()),
                 external_id: ty.external_id.clone(),
             },
         })

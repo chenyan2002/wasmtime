@@ -11,7 +11,6 @@ use crate::{
 use core::str::FromStr;
 use cranelift_entity::{EntityRef, SecondaryMap};
 use indexmap::IndexMap;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use wasmparser::component_types::{
@@ -2153,17 +2152,4 @@ fn ambiguous_entities(
     }
 
     ambiguous
-}
-
-/// Returns the full name of `name` given its optional `versionsuffix`.
-///
-/// Canonical interface names, such as `a:b/c@0.2`, may be paired with a
-/// `versionsuffix`, such as `.1`, which together form the full name
-/// `a:b/c@0.2.1`. Names without a version, or without a suffix, are returned
-/// as-is.
-pub(crate) fn full_name<'a>(name: &'a str, version_suffix: Option<&str>) -> Cow<'a, str> {
-    match version_suffix {
-        Some(suffix) if name.contains('@') => Cow::Owned(format!("{name}{suffix}")),
-        _ => Cow::Borrowed(name),
-    }
 }

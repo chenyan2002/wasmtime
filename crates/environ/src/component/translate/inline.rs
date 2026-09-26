@@ -126,7 +126,7 @@ pub(super) fn run(
         // typechecked separately against the same host definition, just as
         // imports of `a:b/c@0.2.0` and `a:b/c@0.2.1` may both resolve to a
         // host definition of `a:b/c@0.2.2`.
-        let full_name = root_extern_name(&name);
+        let full_name = name.full_name();
         let index = inliner.result.import_types.push((
             full_name.into_owned(),
             ComponentExtern {
@@ -157,7 +157,7 @@ pub(super) fn run(
         // of `.1` and `a:b/c@0.2.1`, are ambiguous for the host. The validator
         // only guarantees that literal names are unique, so reject that here,
         // as otherwise one export would silently overwrite the other.
-        let full_name = root_extern_name(&data);
+        let full_name = data.full_name();
         if export_map.contains_key(&*full_name) {
             bail!("root export `{full_name}` is exported twice");
         }
@@ -1978,25 +1978,10 @@ enum InstanceModule {
     Import(TypeModuleIndex),
 }
 
-/// Returns the name that the host sees for a root import or export `name`.
-///
-/// If `name` is a canonical interface name, such as `a:b/c@0.2`, then its
-/// `versionsuffix` is appended to form the full name, such as `a:b/c@0.2.1`.
-/// Names with an `implements` are labels, so the `versionsuffix` applies to
-/// the `implements` instead and the name is returned as-is.
-fn root_extern_name<'a>(name: &wasmparser::ComponentExternName<'a>) -> Cow<'a, str> {
-    match name.implements {
-        Some(_) => Cow::Borrowed(name.name),
-        None => full_name(name.name, name.version_suffix),
-    }
-}
-
 impl ComponentExternData {
     fn new(data: wasmparser::ComponentExternName<'_>) -> Self {
         ComponentExternData {
-            implements: data
-                .implements
-                .map(|s| full_name(s, data.version_suffix).into_owned()),
+            implements: data.full_implements().map(|s| s.into_owned()),
             external_id: data.external_id.map(|s| s.to_string()),
         }
     }

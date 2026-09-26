@@ -7,7 +7,9 @@ use core::hash::Hash;
 use semver::Version;
 use serde_derive::{Deserialize, Serialize};
 use wasmparser::WasmFeatures;
-use wasmparser::names::{ComponentName, ComponentNameKind};
+use wasmparser::names::{
+    ComponentName, ComponentNameKind, pad_canonical_version, split_canonical_version,
+};
 
 /// A semver-aware map for imports/exports of a component.
 ///
@@ -41,6 +43,8 @@ where
     /// {
     ///     "a:b/c@0.2": ("a:b/c@0.2.1", 0.2.1),
     ///     "a:b/c@2": ("a:b/c@2.0.0+abc", 2.0.0+abc),
+    ///     "a:b/c@0.0.1": ("a:b/c@0.0.1+abc", 0.0.1+abc),
+    ///     "a:b/d@1": ("a:b/d@1", 1.0.0),
     /// }
     /// ```
     ///
@@ -51,6 +55,7 @@ where
     ///
     /// The `Version` here is tracked to ensure that when multiple versions on
     /// one track are defined that only the maximal version here is retained.
+    /// Canonical names such as `a:b/d@1` are padded to their lowest version.
     alternate_lookups: TryIndexMap<K, (K, TryVersion)>,
 }
 
@@ -248,6 +253,9 @@ where
     /// the definition is re-keyed to `name`. For example if `a:b/c@0.2.0` is
     /// defined then `a:b/c@0.2.3` re-keys that definition to `a:b/c@0.2.3`
     /// while `a:b/c@0.2` or `a:b/c@0.1.0` leaves it as-is.
+    ///
+    /// Returns an error if `name` isn't valid, see [`validate_name`], even if
+    /// it would otherwise resolve to an existing definition.
     pub fn get_or_insert_with<I>(
         &mut self,
         name: &str,
@@ -261,6 +269,7 @@ where
         I::Key: Borrow<I::BorrowedKey>,
         I::BorrowedKey: Hash + Eq,
     {
+        validate_name(name)?;
         let index = match self.get_index_of(name, cx) {
             Some((index, exact)) if can_merge(&self.definitions[index]) => {
                 if !exact {
@@ -318,11 +327,6 @@ where
     /// yields what's been inserted with [`NameMap::insert`].
     pub fn raw_iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.definitions.iter()
-    }
-
-    /// TODO
-    pub fn raw_get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.definitions.get_mut(key)
     }
 }
 
@@ -393,37 +397,22 @@ impl NameMapIntern for StringPool {
 /// * `foo:bar/baz` => `None`
 /// * `foo:bar/baz@1.1.2` => `Some(foo:bar/baz@1)`
 /// * `foo:bar/baz@0.1.0` => `Some(foo:bar/baz@0.1)`
-/// * `foo:bar/baz@0.0.1` => `None`
-/// * `foo:bar/baz@0.1.0-rc.2` => `None`
+/// * `foo:bar/baz@0.0.1` => `Some(foo:bar/baz@0.0.1)`
+/// * `foo:bar/baz@0.0.1+abc` => `Some(foo:bar/baz@0.0.1)`
+/// * `foo:bar/baz@0.1.0-rc.2+abc` => `Some(foo:bar/baz@0.1.0-rc.2)`
+/// * `foo:bar/baz@1` => `None`
 ///
-/// This alternate lookup key is intended to serve the purpose where a
-/// semver-compatible definition can be located, if one is defined, at perhaps
-/// either a newer or an older version.
+/// The alternate lookup key is the canonical name of `name`, as defined by
+/// [`split_canonical_version`], and is only returned if `name` has a full
+/// version. This alternate lookup key is intended to serve the purpose where
+/// a semver-compatible definition can be located, if one is defined, at
+/// perhaps either a newer or an older version.
 pub fn alternate_lookup_key(name: &str) -> Option<(&str, Version)> {
     let at = name.find('@')?;
     let version_string = &name[at + 1..];
+    let (canonical, _suffix) = split_canonical_version(version_string)?;
     let version = Version::parse(version_string).ok()?;
-    if !version.pre.is_empty() {
-        // If there's a prerelease then don't consider that compatible with any
-        // other version number.
-        None
-    } else if version.major != 0 {
-        // If the major number is nonzero then compatibility is up to the major
-        // version number, so return up to the first decimal.
-        let first_dot = version_string.find('.')? + at + 1;
-        Some((&name[..first_dot], version))
-    } else if version.minor != 0 {
-        // Like the major version if the minor is nonzero then patch releases
-        // are all considered to be on a "compatible track".
-        let first_dot = version_string.find('.')? + at + 1;
-        let second_dot = name[first_dot + 1..].find('.')? + first_dot + 1;
-        Some((&name[..second_dot], version))
-    } else {
-        // If the patch number is the first nonzero entry then nothing can be
-        // compatible with this patch, e.g. 0.0.1 isn't' compatible with
-        // any other version inherently.
-        None
-    }
+    Some((&name[..at + 1 + canonical.len()], version))
 }
 
 /// Returns the canonical name of the semver track that `name` is on.
@@ -435,7 +424,7 @@ pub fn alternate_lookup_key(name: &str) -> Option<(&str, Version)> {
 /// * `foo:bar/baz@1.1.2` => `foo:bar/baz@1`
 /// * `foo:bar/baz@1` => `foo:bar/baz@1`
 /// * `foo:bar/baz@0.1.0` => `foo:bar/baz@0.1`
-/// * `foo:bar/baz@0.0.1` => `foo:bar/baz@0.0.1`
+/// * `foo:bar/baz@0.0.1+abc` => `foo:bar/baz@0.0.1`
 pub fn canonical_name(name: &str) -> &str {
     match alternate_lookup_key(name) {
         Some((name, _version)) => name,
@@ -448,41 +437,14 @@ pub fn canonical_name(name: &str) -> &str {
 ///
 /// This is the same as [`alternate_lookup_key`] except that canonical names,
 /// such as `a:b/c@0.2`, are on their own track and have the lowest version on
-/// that track, such as `0.2.0`.
+/// that track, such as `0.2.0`, see [`pad_canonical_version`].
 fn semver_track(name: &str) -> Option<(&str, Version)> {
     if let Some(track) = alternate_lookup_key(name) {
         return Some(track);
     }
     let at = name.find('@')?;
-    let version = canonical_version(&name[at + 1..])?;
+    let version = pad_canonical_version(&name[at + 1..])?;
     Some((name, version))
-}
-
-/// Parses the version of a canonical name, such as `1` or `0.2`, into the
-/// lowest version on that semver track, such as `1.0.0` or `0.2.0`.
-///
-/// Returns `None` if `version` isn't the version of a canonical name.
-fn canonical_version(version: &str) -> Option<Version> {
-    fn number(s: &str) -> Option<u64> {
-        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
-        if s.len() > 1 && s.starts_with('0') {
-            return None;
-        }
-        s.parse().ok()
-    }
-    match version.split_once('.') {
-        None => {
-            let major = number(version)?;
-            (major != 0).then(|| Version::new(major, 0, 0))
-        }
-        Some(("0", minor)) => {
-            let minor = number(minor)?;
-            (minor != 0).then(|| Version::new(0, minor, 0))
-        }
-        Some(_) => None,
-    }
 }
 
 /// Validates that `name` is a valid component import or export name.
@@ -527,10 +489,13 @@ mod tests {
         assert_eq!(alt("x:y/z@0.1.3"), Some("x:y/z@0.1"));
         assert_eq!(alt("x:y/z@0.2.3"), Some("x:y/z@0.2"));
         assert_eq!(alt("x:y/z@0.2.3+abc"), Some("x:y/z@0.2"));
-        assert_eq!(alt("x:y/z@0.0.1"), None);
-        assert_eq!(alt("x:y/z@0.0.1-pre"), None);
-        assert_eq!(alt("x:y/z@0.1.0-pre"), None);
-        assert_eq!(alt("x:y/z@1.0.0-pre"), None);
+        assert_eq!(alt("x:y/z@0.0.1"), Some("x:y/z@0.0.1"));
+        assert_eq!(alt("x:y/z@0.0.1+abc"), Some("x:y/z@0.0.1"));
+        assert_eq!(alt("x:y/z@0.0.1-pre"), Some("x:y/z@0.0.1-pre"));
+        assert_eq!(alt("x:y/z@0.1.0-pre"), Some("x:y/z@0.1.0-pre"));
+        assert_eq!(alt("x:y/z@1.0.0-pre+abc"), Some("x:y/z@1.0.0-pre"));
+        assert_eq!(alt("x:y/z@1"), None);
+        assert_eq!(alt("x:y/z@1.2"), None);
     }
 
     #[test]
@@ -594,6 +559,15 @@ mod tests {
         assert_eq!(map.get("a:b/d@0.3", &intern), None);
         assert_eq!(map.get("a:b/e@0.0.1", &intern), Some(&3));
         assert_eq!(map.get("a:b/e@0.0.2", &intern), None);
+
+        // Versions that differ only in build metadata are on the same track.
+        map.insert("a:b/f@0.0.1+b", &mut intern, false, 4).unwrap();
+        map.insert("a:b/f@0.0.1+a", &mut intern, false, 5).unwrap();
+        assert_eq!(map.get("a:b/f@0.0.1+a", &intern), Some(&5));
+        assert_eq!(map.get("a:b/f@0.0.1+b", &intern), Some(&4));
+        assert_eq!(map.get("a:b/f@0.0.1+c", &intern), Some(&4));
+        assert_eq!(map.get("a:b/f@0.0.1", &intern), Some(&4));
+        assert_eq!(map.get("a:b/f@0.0.2", &intern), None);
     }
 
     #[test]
