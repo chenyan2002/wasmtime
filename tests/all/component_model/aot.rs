@@ -244,6 +244,44 @@ fn implements_shows_up() -> Result<()> {
     assert!(a.is_implements("a:b/c@1.2.0"));
     assert!(a.is_implements("a:b/c@1.3.0"));
     assert!(a.is_implements("a:b/c@1.0.0"));
+    assert!(a.is_implements("a:b/c@1"));
+    assert!(!a.is_implements("a:b/c@2.0.0"));
+
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn implements_with_versionsuffix() -> Result<()> {
+    let mut config = Config::new();
+    config.wasm_component_model_implements(true);
+    config.wasm_component_model_canonical_names(true);
+    let engine = Engine::new(&config)?;
+    let component = Component::new(
+        &engine,
+        r#"
+            (component
+                (import "v" (implements "a:b/c@1") (versionsuffix ".2.3") (instance))
+                (import "w" (implements "a:b/c@0.2") (versionsuffix ".1") (instance))
+            )
+        "#,
+    )?;
+
+    let ty = component.component_type();
+    let mut imports = ty.imports(&engine);
+    let (_, v) = imports.next().unwrap();
+    assert_eq!(v.implements.as_deref(), Some("a:b/c@1.2.3"));
+    assert!(v.is_implements("a:b/c@1"));
+    assert!(v.is_implements("a:b/c@1.0.0"));
+    assert!(v.is_implements("a:b/c@1.2.3"));
+    assert!(!v.is_implements("a:b/c@2"));
+    assert!(!v.is_implements("a:b/c"));
+
+    let (_, w) = imports.next().unwrap();
+    assert_eq!(w.implements.as_deref(), Some("a:b/c@0.2.1"));
+    assert!(w.is_implements("a:b/c@0.2"));
+    assert!(w.is_implements("a:b/c@0.2.0"));
+    assert!(!w.is_implements("a:b/c@0.3.0"));
 
     Ok(())
 }
