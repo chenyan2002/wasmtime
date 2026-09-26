@@ -35,15 +35,17 @@ use wasmtime_environ::{Atom, PrimaryMap, StringPool};
 /// * `wasi:http/types@0.2.0-rc-2023-10-25`
 /// * `my:custom/plugin@1.0.0-pre.2`
 ///
-/// These version strings are taken into account when looking up names within a
-/// [`Linker`]. You're allowed to define any number of versions within a
-/// [`Linker`] still, for example you can define `a:b/c@0.2.0`, `a:b/c@0.2.1`,
-/// and `a:b/c@0.3.0` all at the same time.
+/// These version strings are taken into account when defining and looking up
+/// names within a [`Linker`]. A [`Linker`] holds at most one definition per
+/// semver track, for example `a:b/c@0.2.0` and `a:b/c@0.2.1` are on the same
+/// track while `a:b/c@0.3.0` is on a different one. Defining a second version
+/// on the same track is an error, unless shadowing is allowed in which case
+/// the new definition replaces the previous one.
 ///
-/// Specifically though when names are looked up within a linker, for example
-/// during instantiation, semver-compatible names are automatically consulted.
-/// This means that if you define `a:b/c@0.2.1` in a [`Linker`] but a component
-/// imports `a:b/c@0.2.0` then that import will resolve to the `0.2.1` version.
+/// When names are looked up within a linker, for example during
+/// instantiation, the definition on the same semver track is used. This means
+/// that if you define `a:b/c@0.2.1` in a [`Linker`] but a component imports
+/// `a:b/c@0.2.0` then that import will resolve to the `0.2.1` version.
 ///
 /// This lookup behavior relies on hosts being well-behaved when using Semver,
 /// specifically that interfaces once defined are never changed. This reflects
@@ -57,17 +59,15 @@ use wasmtime_environ::{Atom, PrimaryMap, StringPool};
 ///
 /// Instances defined with [`Linker::instance`] and [`LinkerInstance::instance`]
 /// are shared between all versions on a semver track. For example defining
-/// `a:b/c@0.2.0` and then `a:b/c@0.2.1` reopens the same instance, which is
-/// then defined as `a:b/c@0.2.1`, the highest version. This means that items
-/// defined in the two instances are merged, and that defining an item in both
-/// is an error unless shadowing is allowed.
+/// `a:b/c@0.2.0` and then `a:b/c@0.2.1` reopens the same instance. This means
+/// that items defined in the two instances are merged, and that defining an
+/// item in both is an error unless shadowing is allowed.
 ///
 /// Names may also be canonical interface names, such as `a:b/c@0.2` or
 /// `a:b/c@1`, which refer to their semver track. Components refer to
 /// canonical names along with a `versionsuffix`, such as `a:b/c@0.2` with
 /// `.1` for `a:b/c@0.2.1`, and such names are looked up with the full name
-/// `a:b/c@0.2.1`. When looking up a canonical name without a suffix, the
-/// highest version defined on its track is returned.
+/// `a:b/c@0.2.1`.
 ///
 /// This behavior is intended to make it easier for hosts to upgrade WASI and
 /// for guests to upgrade WASI. So long as the actual "meat" of the
@@ -979,7 +979,7 @@ impl<T: 'static> LinkerInstance<'_, T> {
         Ok(self)
     }
 
-    fn insert(&mut self, name: &str, item: Definition) -> Result<Atom> {
+    fn insert(&mut self, name: &str, item: Definition) -> Result<()> {
         self.map
             .insert(name, self.strings, self.allow_shadowing, item)
     }

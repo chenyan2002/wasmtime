@@ -54,10 +54,16 @@ fn import_both_old_and_new() -> Result<()> {
     let engine = Engine::default();
     let mut linker = Linker::<()>::new(&engine);
 
+    // There's one definition per semver track.
     let t1 = ResourceType::host::<u32>();
     let t2 = ResourceType::host::<i32>();
     linker.root().resource("a:b/c@1.0.0", t1, |_, _| Ok(()))?;
-    linker.root().resource("a:b/c@1.0.1", t2, |_, _| Ok(()))?;
+    assert!(
+        linker
+            .root()
+            .resource("a:b/c@1.0.1", t2, |_, _| Ok(()))
+            .is_err()
+    );
 
     let component = Component::new(
         &engine,
@@ -72,15 +78,16 @@ fn import_both_old_and_new() -> Result<()> {
     let i = linker.instantiate(&mut store, &component)?;
 
     assert_eq!(i.get_resource(&mut store, "t1"), Some(t1));
-    assert_eq!(i.get_resource(&mut store, "t2"), Some(t2));
+    assert_eq!(i.get_resource(&mut store, "t2"), Some(t1));
 
     Ok(())
 }
 
 #[test]
-fn missing_import_selects_max() -> Result<()> {
+fn shadowing_replaces_same_track() -> Result<()> {
     let engine = Engine::default();
     let mut linker = Linker::<()>::new(&engine);
+    linker.allow_shadowing(true);
 
     let t1 = ResourceType::host::<u32>();
     let t2 = ResourceType::host::<i32>();
