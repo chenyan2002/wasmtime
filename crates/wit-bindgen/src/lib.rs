@@ -1168,6 +1168,7 @@ impl<_T: Send + 'static> {camel}Pre<_T> {{
                 world,
                 wit_component::StringEncoding::UTF8,
                 None,
+                false,
             )?;
             uwriteln!(
                 self.src,
@@ -3920,6 +3921,12 @@ fn rust_function_name(func: &Function) -> String {
         | FunctionKind::AsyncStatic(_)
         | FunctionKind::Freestanding
         | FunctionKind::AsyncFreestanding => to_rust_ident(func.item_name()),
+        FunctionKind::Getter
+        | FunctionKind::Setter
+        | FunctionKind::MethodGetter(_)
+        | FunctionKind::MethodSetter(_)
+        | FunctionKind::StaticGetter(_)
+        | FunctionKind::StaticSetter(_) => unimplemented!("WIT getters and setters"),
     }
 }
 
@@ -3942,6 +3949,12 @@ fn func_field_name(resolve: &Resolve, func: &Function) -> String {
             name.push_str("-");
         }
         FunctionKind::Freestanding | FunctionKind::AsyncFreestanding => {}
+        FunctionKind::Getter
+        | FunctionKind::Setter
+        | FunctionKind::MethodGetter(_)
+        | FunctionKind::MethodSetter(_)
+        | FunctionKind::StaticGetter(_)
+        | FunctionKind::StaticSetter(_) => unimplemented!("WIT getters and setters"),
     }
     name.push_str(func.item_name());
     name.to_snake_case()

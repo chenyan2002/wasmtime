@@ -2572,9 +2572,14 @@ pub trait TypeConvert {
     }
 
     fn convert_sub_type(&self, ty: &wasmparser::SubType) -> WasmResult<WasmSubType> {
+        // Validation rejects types with more than one supertype.
+        debug_assert!(ty.supertype_idxs.len() <= 1);
         Ok(WasmSubType {
             is_final: ty.is_final,
-            supertype: ty.supertype_idx.map(|i| self.lookup_type_index(i.unpack())),
+            supertype: ty
+                .supertype_idxs
+                .first()
+                .map(|i| self.lookup_type_index(i.unpack())),
             composite_type: self.convert_composite_type(&ty.composite_type)?,
         })
     }

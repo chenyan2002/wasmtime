@@ -84,6 +84,13 @@ impl FunctionConfig {
             | FunctionKind::AsyncStatic(_) => {
                 wit_flags |= FunctionFlags::ASYNC | FunctionFlags::STORE;
             }
+
+            FunctionKind::Getter
+            | FunctionKind::Setter
+            | FunctionKind::MethodGetter(_)
+            | FunctionKind::MethodSetter(_)
+            | FunctionKind::StaticGetter(_)
+            | FunctionKind::StaticSetter(_) => unimplemented!("WIT getters and setters"),
         }
 
         let mut ret = FunctionFlags::empty();
