@@ -68,10 +68,35 @@ impl Default for MemoryAllocationIndex {
 }
 
 impl MemoryAllocationIndex {
+    /// The most-significant bit is used to tag indices that belong to the
+    /// page-size-1 memory pool, so untagged indices must be strictly less than
+    /// this value.
+    #[cfg(feature = "pooling-allocator")]
+    pub(crate) const PAGE_SIZE_1_BIT: u32 = 1 << 31;
+
     /// Get the underlying index of this `MemoryAllocationIndex`.
     #[cfg(feature = "pooling-allocator")]
     pub fn index(&self) -> usize {
-        self.0 as usize
+        (self.0 & !Self::PAGE_SIZE_1_BIT) as usize
+    }
+
+    /// Tag this index as belonging to the page-size-1 memory pool.
+    #[cfg(feature = "pooling-allocator")]
+    pub fn with_page_size_1_tag(self) -> Self {
+        MemoryAllocationIndex(self.0 | Self::PAGE_SIZE_1_BIT)
+    }
+
+    /// Returns `true` if this index is tagged as belonging to the page-size-1
+    /// memory pool.
+    #[cfg(feature = "pooling-allocator")]
+    pub fn is_page_size_1(&self) -> bool {
+        self.0 & Self::PAGE_SIZE_1_BIT != 0
+    }
+
+    /// Return a copy with the tag bit cleared, for passing into a `MemoryPool`.
+    #[cfg(feature = "pooling-allocator")]
+    pub fn without_tag(self) -> Self {
+        MemoryAllocationIndex(self.0 & !Self::PAGE_SIZE_1_BIT)
     }
 }
 

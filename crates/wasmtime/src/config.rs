@@ -3958,11 +3958,24 @@ pub(crate) struct InstanceLimits {
     /// transitively contain.
     pub(crate) max_memories_per_component: u32,
 
+    /// The maximum number of page-size-1 Wasm linear memories that a component
+    /// may transitively contain.
+    pub(crate) max_page_size_1_memories_per_component: u32,
+
     /// The maximum number of tables that a component may transitively contain.
     pub(crate) max_tables_per_component: u32,
 
-    /// The total number of linear memories in the pool, across all instances.
+    /// The total number of default-page-size linear memories in the pool,
+    /// across all instances.
     pub(crate) total_memories: u32,
+
+    /// The total number of page-size-1 linear memories in the pool, across all
+    /// instances. Page-size-1 memories use explicit bounds checks and do not
+    /// need large virtual address space reservations.
+    pub(crate) total_page_size_1_memories: u32,
+
+    /// Maximum byte size of a page-size-1 linear memory.
+    pub(crate) max_page_size_1_memory_size: usize,
 
     /// The total number of tables in the pool, across all instances.
     pub(crate) total_tables: u32,
@@ -3983,7 +3996,7 @@ pub(crate) struct InstanceLimits {
     /// elements.
     pub(crate) table_elements: usize,
 
-    /// Maximum number of linear memories per instance.
+    /// Maximum number of linear memories per module.
     pub(crate) max_memories_per_module: u32,
 
     /// Maximum byte size of a linear memory, must be smaller than
@@ -4009,8 +4022,11 @@ impl Default for InstanceLimits {
             total_core_instances: total,
             max_core_instances_per_component: u32::MAX,
             max_memories_per_component: u32::MAX,
+            max_page_size_1_memories_per_component: u32::MAX,
             max_tables_per_component: u32::MAX,
             total_memories: total,
+            total_page_size_1_memories: 0,
+            max_page_size_1_memory_size: 10 << 20, // 10 MiB
             total_tables: total,
             total_stacks: total,
             core_instance_size: 1 << 20, // 1 MiB
@@ -4250,6 +4266,18 @@ impl PoolingAllocationConfig {
         self
     }
 
+    /// The maximum number of page-size-1 Wasm linear memories that a single
+    /// component may transitively contain (default is unlimited).
+    ///
+    /// When a separate page-size-1 memory pool is configured (via
+    /// [`PoolingAllocationConfig::total_page_size_1_memories`]), page-size-1
+    /// memories are counted against this limit instead of
+    /// [`PoolingAllocationConfig::max_memories_per_component`].
+    pub fn max_page_size_1_memories_per_component(&mut self, count: u32) -> &mut Self {
+        self.limits.max_page_size_1_memories_per_component = count;
+        self
+    }
+
     /// The maximum number of tables that a single component may transitively
     /// contain (default is unlimited).
     ///
@@ -4286,6 +4314,33 @@ impl PoolingAllocationConfig {
     /// GiB of space by default.
     pub fn total_memories(&mut self, count: u32) -> &mut Self {
         self.limits.total_memories = count;
+        self
+    }
+
+    /// The maximum number of concurrent page-size-1 Wasm linear memories
+    /// supported (default is `0`).
+    ///
+    /// Page-size-1 memories use explicit bounds checks and do not require the
+    /// large virtual address space reservations that default-page-size memories
+    /// need. Setting this to a non-zero value creates a dedicated pool for
+    /// these memories with a much smaller per-slot reservation controlled by
+    /// [`PoolingAllocationConfig::max_page_size_1_memory_size`].
+    ///
+    /// When this is `0` (the default), page-size-1 memories are allocated from
+    /// the main memory pool alongside default-page-size memories.
+    pub fn total_page_size_1_memories(&mut self, count: u32) -> &mut Self {
+        self.limits.total_page_size_1_memories = count;
+        self
+    }
+
+    /// The maximum byte size of a page-size-1 linear memory (default is 10
+    /// MiB).
+    ///
+    /// This controls the per-slot virtual address space reservation in the
+    /// page-size-1 memory pool. Only meaningful when
+    /// [`PoolingAllocationConfig::total_page_size_1_memories`] is non-zero.
+    pub fn max_page_size_1_memory_size(&mut self, bytes: usize) -> &mut Self {
+        self.limits.max_page_size_1_memory_size = bytes;
         self
     }
 
@@ -4627,6 +4682,18 @@ impl PoolingAllocationConfig {
     }
 
     /// Returns the configured
+    /// [`PoolingAllocationConfig::total_page_size_1_memories`], if enabled.
+    pub fn get_total_page_size_1_memories(&self) -> u32 {
+        self.limits.total_page_size_1_memories
+    }
+
+    /// Returns the configured
+    /// [`PoolingAllocationConfig::max_page_size_1_memory_size`], if enabled.
+    pub fn get_max_page_size_1_memory_size(&self) -> usize {
+        self.limits.max_page_size_1_memory_size
+    }
+
+    /// Returns the configured
     /// [`PoolingAllocationConfig::total_tables`], if enabled.
     pub fn get_total_tables(&self) -> u32 {
         self.limits.total_tables
@@ -4681,6 +4748,13 @@ impl PoolingAllocationConfig {
     /// enabled.
     pub fn get_max_memories_per_component(&self) -> u32 {
         self.limits.max_memories_per_component
+    }
+
+    /// Returns the configured
+    /// [`PoolingAllocationConfig::max_page_size_1_memories_per_component`], if
+    /// enabled.
+    pub fn get_max_page_size_1_memories_per_component(&self) -> u32 {
+        self.limits.max_page_size_1_memories_per_component
     }
 
     /// Returns the configured

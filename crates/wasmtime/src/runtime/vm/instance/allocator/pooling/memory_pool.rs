@@ -140,6 +140,10 @@ pub struct MemoryPool {
     /// Keep track of protection keys handed out to initialized stores; this
     /// allows us to round-robin the assignment of stores to stripes.
     next_available_pkey: AtomicUsize,
+
+    /// The tunables this pool was constructed with. Stored here because the
+    /// page-size-1 pool uses different tunables than the engine's global ones.
+    tunables: Tunables,
 }
 
 /// The state of memory for each slot in this pool.
@@ -285,6 +289,7 @@ impl MemoryPool {
                 config.linear_memory_keep_resident,
             )?,
             next_available_pkey: AtomicUsize::new(0),
+            tunables: tunables.clone(),
         };
 
         Ok(pool)
@@ -345,6 +350,10 @@ impl MemoryPool {
         Ok(())
     }
 
+    pub fn memories_per_instance(&self) -> usize {
+        self.memories_per_instance
+    }
+
     /// Are zero slots in use right now?
     pub fn is_empty(&self) -> bool {
         self.stripes.iter().all(|s| s.allocator.is_empty())
@@ -357,7 +366,7 @@ impl MemoryPool {
         ty: &wasmtime_environ::Memory,
         memory_index: Option<DefinedMemoryIndex>,
     ) -> Result<(MemoryAllocationIndex, Memory)> {
-        let tunables = request.store.engine().tunables();
+        let tunables = &self.tunables;
         let memory_tunables = MemoryTunables::new(tunables, MemoryKind::LinearMemory);
         let stripe_index = if let Some(pkey) = request.store.get_pkey() {
             pkey.as_stripe()

@@ -50,7 +50,7 @@ use super::{
     InstanceAllocationRequest, InstanceAllocator, MemoryAllocationIndex, TableAllocationIndex,
 };
 use crate::Enabled;
-use crate::config::PoolingAllocationConfig;
+use crate::config::{InstanceLimits, PoolingAllocationConfig};
 use crate::prelude::*;
 use crate::runtime::vm::{
     CompiledModuleId, Memory, Table,
@@ -210,7 +210,12 @@ pub struct PoolingInstanceAllocator {
     /// shards.
     decommit_queues: Box<[CachePadded<Mutex<DecommitQueue>>]>,
 
-    memories: MemoryPool,
+    // NB: this is named differently from upstream's `memories` field so that
+    // any new upstream code referencing `memories` fails to compile when
+    // merged, forcing us to consider whether it also needs to handle
+    // `page_size_1_memories`.
+    default_page_size_memories: MemoryPool,
+    page_size_1_memories: Option<MemoryPool>,
     live_memories: AtomicUsize,
 
     tables: TablePool,
@@ -250,7 +255,10 @@ impl Drop for PoolingInstanceAllocator {
         debug_assert_eq!(self.live_memories.load(Ordering::Acquire), 0);
         debug_assert_eq!(self.live_tables.load(Ordering::Acquire), 0);
 
-        debug_assert!(self.memories.is_empty());
+        debug_assert!(self.default_page_size_memories.is_empty());
+        if let Some(ref ps1) = self.page_size_1_memories {
+            debug_assert!(ps1.is_empty());
+        }
         debug_assert!(self.tables.is_empty());
 
         #[cfg(feature = "gc")]
@@ -270,13 +278,55 @@ impl Drop for PoolingInstanceAllocator {
 impl PoolingInstanceAllocator {
     /// Creates a new pooling instance allocator with the given strategy and limits.
     pub fn new(config: &PoolingAllocationConfig, tunables: &Tunables) -> Result<Self> {
+        // The most-significant bit of `MemoryAllocationIndex` is reserved to
+        // tag page-size-1 memories, so neither pool may produce an index that
+        // has it set.
+        let max_total_memories = MemoryAllocationIndex::PAGE_SIZE_1_BIT;
+        if config.limits.total_memories >= max_total_memories {
+            bail!(
+                "total_memories of {} must be less than {max_total_memories}",
+                config.limits.total_memories
+            );
+        }
+        if config.limits.total_page_size_1_memories >= max_total_memories {
+            bail!(
+                "total_page_size_1_memories of {} must be less than {max_total_memories}",
+                config.limits.total_page_size_1_memories
+            );
+        }
+
         Ok(Self {
             live_component_instances: AtomicU64::new(0),
             live_core_instances: AtomicU64::new(0),
             decommit_queues: (0..default_shard_count())
                 .map(|_| CachePadded(Mutex::new(DecommitQueue::default())))
                 .try_collect::<Box<[_]>, OutOfMemory>()?,
-            memories: MemoryPool::new(config, tunables)?,
+            default_page_size_memories: MemoryPool::new(config, tunables)?,
+            page_size_1_memories: if config.limits.total_page_size_1_memories > 0 {
+                let ps1_tunables = Tunables {
+                    memory_reservation: config.limits.max_page_size_1_memory_size as u64,
+                    memory_guard_size: 0,
+                    memory_reservation_for_growth: 0,
+                    guard_before_linear_memory: false,
+                    // just to be defensive
+                    memory_init_cow: false,
+                    memory_may_move: false,
+                    signals_based_traps: false,
+                    ..tunables.clone()
+                };
+                let ps1_config = PoolingAllocationConfig {
+                    limits: InstanceLimits {
+                        total_memories: config.limits.total_page_size_1_memories,
+                        max_memory_size: config.limits.max_page_size_1_memory_size,
+                        ..config.limits
+                    },
+                    memory_protection_keys: Enabled::No,
+                    ..config.clone()
+                };
+                Some(MemoryPool::new(&ps1_config, &ps1_tunables)?)
+            } else {
+                None
+            },
             live_memories: AtomicUsize::new(0),
             tables: TablePool::new(config)?,
             live_tables: AtomicUsize::new(0),
@@ -313,12 +363,60 @@ impl PoolingInstanceAllocator {
         )
     }
 
+    fn memory_pool_for(&self, ty: &wasmtime_environ::Memory) -> &MemoryPool {
+        if ty.page_size_log2 == 0 {
+            if let Some(ref ps1) = self.page_size_1_memories {
+                return ps1;
+            }
+        }
+        &self.default_page_size_memories
+    }
+
+    /// Returns the pool that `index` was allocated from, based on its
+    /// page-size-1 tag bit. Note that the returned pool expects the untagged
+    /// index, i.e. `index.without_tag()`.
+    fn memory_pool_for_index(&self, index: MemoryAllocationIndex) -> &MemoryPool {
+        if index.is_page_size_1() {
+            self.page_size_1_memories
+                .as_ref()
+                .expect("tagged as page-size-1 but no page-size-1 pool")
+        } else {
+            &self.default_page_size_memories
+        }
+    }
+
     fn validate_table_plans(&self, module: &Module) -> Result<()> {
         self.tables.validate(module)
     }
 
     fn validate_memory_plans(&self, module: &Module) -> Result<()> {
-        self.memories.validate_memories(module)
+        if self.page_size_1_memories.is_none() {
+            return self.default_page_size_memories.validate_memories(module);
+        }
+
+        // When we have a separate page-size-1 pool, we duplicate the
+        // iteration from `MemoryPool::validate_memories` so we can route
+        // each memory to the correct pool without leaking the two-pool
+        // design into `MemoryPool` itself.
+        let memories = module.num_defined_memories();
+        if memories > self.default_page_size_memories.memories_per_instance() {
+            bail!(
+                "defined memories count of {} exceeds the per-instance limit of {}",
+                memories,
+                self.default_page_size_memories.memories_per_instance(),
+            );
+        }
+        for (i, memory) in module.memories.iter().skip(module.num_imported_memories) {
+            self.memory_pool_for(memory)
+                .validate_memory(memory)
+                .with_context(|| {
+                    format!(
+                        "memory index {} is unsupported in this pooling allocator configuration",
+                        i.as_u32()
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     fn validate_core_instance_size(&self, offsets: &VMOffsets<HostPtr>) -> Result<()> {
@@ -510,8 +608,10 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
     ) -> Result<()> {
         let mut num_core_instances = 0;
         let mut num_memories = 0;
+        let mut num_ps1_memories = 0;
         let mut num_tables = 0;
         let mut core_instances_aggregate_size: usize = 0;
+        let has_ps1_pool = self.page_size_1_memories.is_some();
         for init in &component.initializers {
             use wasmtime_environ::component::GlobalInitializer::*;
             use wasmtime_environ::component::InstantiateModule;
@@ -527,7 +627,19 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
                     let layout = Instance::alloc_layout(&offsets);
                     self.validate_module(module, &offsets)?;
                     num_core_instances += 1;
-                    num_memories += module.num_defined_memories();
+                    if has_ps1_pool {
+                        for (_i, memory) in
+                            module.memories.iter().skip(module.num_imported_memories)
+                        {
+                            if memory.page_size_log2 == 0 {
+                                num_ps1_memories += 1;
+                            } else {
+                                num_memories += 1;
+                            }
+                        }
+                    } else {
+                        num_memories += module.num_defined_memories();
+                    }
                     num_tables += module.num_defined_tables();
                     core_instances_aggregate_size += layout.size();
                 }
@@ -559,6 +671,16 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
             );
         }
 
+        if num_ps1_memories
+            > usize::try_from(self.config.limits.max_page_size_1_memories_per_component).unwrap()
+        {
+            bail!(
+                "The component transitively contains {num_ps1_memories} page-size-1 Wasm linear \
+                 memories, which exceeds the configured maximum of {} in the pooling allocator",
+                self.config.limits.max_page_size_1_memories_per_component
+            );
+        }
+
         if num_tables > usize::try_from(self.config.limits.max_tables_per_component).unwrap() {
             bail!(
                 "The component transitively contains {num_tables} tables, which exceeds the \
@@ -585,7 +707,7 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
 
     #[cfg(feature = "gc")]
     fn validate_memory(&self, memory: &wasmtime_environ::Memory) -> Result<()> {
-        self.memories.validate_memory(memory)
+        self.memory_pool_for(memory).validate_memory(memory)
     }
 
     #[cfg(feature = "component-model")]
@@ -632,12 +754,15 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
         _memory_kind: MemoryKind,
     ) -> Pin<Box<dyn Future<Output = Result<(MemoryAllocationIndex, Memory)>> + Send + 'a>> {
         crate::runtime::box_future(async move {
+            let is_ps1 = ty.page_size_log2 == 0 && self.page_size_1_memories.is_some();
+            let pool = self.memory_pool_for(ty);
+
             async {
                 // FIXME(rust-lang/rust#145127) this should ideally use a version of
                 // `with_flush_and_retry` but adapted for async closures instead of only
                 // sync closures. Right now that won't compile though so this is the
                 // manually expanded version of the method.
-                let mut e = match self.memories.allocate(request, ty, memory_index).await {
+                let mut e = match pool.allocate(request, ty, memory_index).await {
                     Ok(result) => return Ok(result),
                     Err(e) => e,
                 };
@@ -648,7 +773,7 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
                     }
                     let queue = self.decommit_queue(shard).lock().unwrap();
                     if self.flush_decommit_queue(queue) {
-                        match self.memories.allocate(request, ty, memory_index).await {
+                        match pool.allocate(request, ty, memory_index).await {
                             Ok(result) => return Ok(result),
                             Err(err) => e = err,
                         }
@@ -660,6 +785,14 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
             .await
             .inspect(|_| {
                 self.live_memories.fetch_add(1, Ordering::Relaxed);
+            })
+            .map(|(index, memory)| {
+                let index = if is_ps1 {
+                    index.with_page_size_1_tag()
+                } else {
+                    index
+                };
+                (index, memory)
             })
         })
     }
@@ -679,23 +812,22 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
         // immediately without preserving the image.
         let mut image = memory.unwrap_static_image();
         let mut queue = DecommitQueue::default();
-        let bytes_resident = image.clear_and_remain_ready(
-            self.pagemap.as_ref(),
-            self.memories.keep_resident,
-            |ptr, len| {
+        let pool = self.memory_pool_for_index(allocation_index);
+        let bytes_resident =
+            image.clear_and_remain_ready(self.pagemap.as_ref(), pool.keep_resident, |ptr, len| {
                 // SAFETY: the memory in `image` won't be used until this
                 // decommit queue is flushed, and by definition the memory is
                 // not in use when calling this function.
                 unsafe {
                     queue.push_raw(ptr, len);
                 }
-            },
-        );
+            });
 
         match bytes_resident {
             Ok(bytes_resident) => {
                 // SAFETY: this image is not in use and its memory regions were enqueued
-                // with `push_raw` above.
+                // with `push_raw` above. The allocation_index retains its tag bit so
+                // the decommit queue can route to the correct pool on flush.
                 unsafe {
                     queue.push_memory(allocation_index, image, bytes_resident);
                 }
@@ -715,7 +847,7 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
                 // reachable on non-Linux platforms because Linux can't return an
                 // error.
                 unsafe {
-                    self.memories.deallocate(allocation_index, None, 0);
+                    pool.deallocate(allocation_index.without_tag(), None, 0);
                 }
             }
         }
@@ -817,11 +949,16 @@ unsafe impl InstanceAllocator for PoolingInstanceAllocator {
     }
 
     fn purge_module(&self, module: CompiledModuleId) {
-        self.memories.purge_module(module);
+        self.default_page_size_memories.purge_module(module);
+        if let Some(ref ps1) = self.page_size_1_memories {
+            ps1.purge_module(module);
+        }
     }
 
     fn next_available_pkey(&self) -> Option<ProtectionKey> {
-        self.memories.next_available_pkey()
+        // The page-size-1 pool is always created with MPK disabled, so only
+        // the default pool has protection keys.
+        self.default_page_size_memories.next_available_pkey()
     }
 
     fn restrict_to_pkey(&self, pkey: ProtectionKey) {
