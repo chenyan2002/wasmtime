@@ -1402,6 +1402,142 @@ fn instantiate_non_page_aligned_sizes() -> Result<()> {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn page_size_1_pool_is_separate() -> Result<()> {
+    let mut config = Config::new();
+    config.wasm_custom_page_sizes(true);
+    let mut cfg = crate::small_pool_config();
+    cfg.total_memories(1);
+    cfg.total_page_size_1_memories(2);
+    cfg.max_page_size_1_memory_size(1 << 16);
+    config.allocation_strategy(InstanceAllocationStrategy::Pooling(cfg));
+    let engine = Engine::new(&config)?;
+
+    let ps1 = Module::new(
+        &engine,
+        r#"
+            (module
+                (memory 100 (pagesize 1))
+                (data (i32.const 0) "a")
+                (func (export "load") (param i32) (result i32)
+                    local.get 0
+                    i32.load8_u)
+            )
+        "#,
+    )?;
+    let default = Module::new(&engine, r#"(module (memory 1))"#)?;
+
+    for _ in 0..5 {
+        let mut store = Store::new(&engine, ());
+
+        // One default-page-size memory plus two page-size-1 memories fit
+        // concurrently even though `total_memories` is 1.
+        Instance::new(&mut store, &default, &[])?;
+        let a = Instance::new(&mut store, &ps1, &[])?;
+        let b = Instance::new(&mut store, &ps1, &[])?;
+
+        // But the page-size-1 pool is now exhausted.
+        match Instance::new(&mut store, &ps1, &[]) {
+            Ok(_) => panic!("should have hit the page-size-1 pool limit"),
+            Err(e) => e.assert_contains("maximum concurrent limit of 2"),
+        }
+
+        for instance in [a, b] {
+            let load = instance.get_typed_func::<u32, u32>(&mut store, "load")?;
+            assert_eq!(load.call(&mut store, 0)?, u32::from(b'a'));
+            assert_eq!(load.call(&mut store, 99)?, 0);
+            let trap = load.call(&mut store, 100).unwrap_err();
+            assert_eq!(trap.downcast::<Trap>()?, Trap::MemoryOutOfBounds);
+        }
+    }
+
+    // All three slots have been used and are now warm.
+    let metrics = engine.pooling_allocator_metrics().unwrap();
+    assert_eq!(metrics.memories(), 0);
+    assert_eq!(metrics.unused_warm_memories(), 3);
+
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn page_size_1_pool_memory_size_limit() -> Result<()> {
+    let mut config = Config::new();
+    config.wasm_custom_page_sizes(true);
+    let mut cfg = crate::small_pool_config();
+    cfg.max_memory_size(1 << 20);
+    cfg.total_page_size_1_memories(1);
+    cfg.max_page_size_1_memory_size(1 << 16);
+    config.allocation_strategy(InstanceAllocationStrategy::Pooling(cfg));
+    let engine = Engine::new(&config)?;
+
+    // Fits in the page-size-1 pool.
+    Module::new(&engine, r#"(module (memory 65536 (pagesize 1)))"#)?;
+
+    // Would fit in the default pool, but page-size-1 memories are validated
+    // against the page-size-1 pool's limit.
+    match Module::new(&engine, r#"(module (memory 65537 (pagesize 1)))"#) {
+        Ok(_) => panic!("should have hit the page-size-1 memory size limit"),
+        Err(e) => e.assert_contains(
+            "memory has a minimum byte size of 65537 which exceeds the limit of 0x10000 bytes",
+        ),
+    }
+
+    // Default-page-size memories still use the default pool's limit.
+    Module::new(&engine, r#"(module (memory 16))"#)?;
+
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "component-model")]
+fn component_page_size_1_memories_limit() -> Result<()> {
+    let mut pool = crate::small_pool_config();
+    pool.max_memories_per_component(1)
+        .total_page_size_1_memories(2)
+        .max_page_size_1_memories_per_component(1);
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.wasm_custom_page_sizes(true);
+    config.allocation_strategy(pool);
+    let engine = Engine::new(&config)?;
+
+    // One memory of each kind works: page-size-1 memories don't count against
+    // `max_memories_per_component`.
+    wasmtime::component::Component::new(
+        &engine,
+        r#"
+            (component
+                (core module $m (memory 1 1))
+                (core module $p (memory 1 1 (pagesize 1)))
+                (core instance $a (instantiate $m))
+                (core instance $b (instantiate $p))
+            )
+        "#,
+    )?;
+
+    // Two page-size-1 memories doesn't.
+    match wasmtime::component::Component::new(
+        &engine,
+        r#"
+            (component
+                (core module $p (memory 1 1 (pagesize 1)))
+                (core instance $a (instantiate $p))
+                (core instance $b (instantiate $p))
+            )
+        "#,
+    ) {
+        Ok(_) => panic!("should have hit limit"),
+        Err(e) => e.assert_contains(
+            "The component transitively contains 2 page-size-1 Wasm linear memories, which \
+             exceeds the configured maximum of 1",
+        ),
+    }
+
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn pagemap_scan_enabled_or_disabled() -> Result<()> {
     let mut config = Config::new();
     let mut cfg = crate::small_pool_config();

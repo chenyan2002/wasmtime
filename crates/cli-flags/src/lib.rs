@@ -146,6 +146,14 @@ wasmtime_option_group! {
         /// the pooling allocator.
         pub pooling_total_memories: Option<u32>,
 
+        /// The maximum number of page-size-1 WebAssembly memories which can be
+        /// created with the pooling allocator.
+        pub pooling_total_page_size_1_memories: Option<u32>,
+
+        /// The maximum byte size of a page-size-1 linear memory in the pooling
+        /// allocator.
+        pub pooling_max_page_size_1_memory_size: Option<usize>,
+
         /// The maximum number of WebAssembly tables which can be created with
         /// the pooling allocator.
         pub pooling_total_tables: Option<u32>,
@@ -185,6 +193,10 @@ wasmtime_option_group! {
         /// The maximum number of Wasm linear memories that a single component may
         /// transitively contain (default is unlimited).
         pub pooling_max_memories_per_component: Option<u32>,
+
+        /// The maximum number of page-size-1 Wasm linear memories that a single
+        /// component may transitively contain (default is unlimited).
+        pub pooling_max_page_size_1_memories_per_component: Option<u32>,
 
         /// The maximum number of tables that a single component may transitively
         /// contain (default is unlimited).
@@ -1087,6 +1099,15 @@ impl CommonOptions {
                     if let Some(limit) = self.opts.pooling_total_memories {
                         cfg.total_memories(limit);
                     }
+                    if let Some(limit) = self.opts.pooling_total_page_size_1_memories {
+                        cfg.total_page_size_1_memories(limit);
+                    }
+                    if let Some(limit) = self.opts.pooling_max_page_size_1_memory_size {
+                        cfg.max_page_size_1_memory_size(limit);
+                    }
+                    if let Some(max) = self.opts.pooling_max_page_size_1_memories_per_component {
+                        cfg.max_page_size_1_memories_per_component(max);
+                    }
                     if let Some(limit) = self.opts.pooling_total_tables {
                         cfg.total_tables(limit);
                     }
@@ -1368,6 +1389,10 @@ impl CommonOptions {
                 pooling_total_component_instances: pooling
                     .map(|c| c.get_total_component_instances()),
                 pooling_total_memories: pooling.map(|c| c.get_total_memories()),
+                pooling_total_page_size_1_memories: pooling
+                    .map(|c| c.get_total_page_size_1_memories()),
+                pooling_max_page_size_1_memory_size: pooling
+                    .map(|c| c.get_max_page_size_1_memory_size()),
                 pooling_total_tables: pooling.map(|c| c.get_total_tables()),
                 pooling_max_memory_size: pooling.map(|c| c.get_max_memory_size()),
                 pooling_table_elements: pooling.map(|c| c.get_table_elements()),
@@ -1378,6 +1403,8 @@ impl CommonOptions {
                     .map(|c| c.get_max_core_instances_per_component()),
                 pooling_max_memories_per_component: pooling
                     .map(|c| c.get_max_memories_per_component()),
+                pooling_max_page_size_1_memories_per_component: pooling
+                    .map(|c| c.get_max_page_size_1_memories_per_component()),
                 pooling_max_tables_per_component: pooling.map(|c| c.get_max_tables_per_component()),
                 pooling_max_tables_per_module: pooling.map(|c| c.get_max_tables_per_module()),
                 pooling_max_memories_per_module: pooling.map(|c| c.get_max_memories_per_module()),

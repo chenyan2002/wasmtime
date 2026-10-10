@@ -178,24 +178,42 @@ impl DecommitQueue {
         let mut deallocated_any = false;
         if !self.memories.is_empty() {
             deallocated_any = true;
+            // Memories are routed back to the pool they were allocated from
+            // based on the page-size-1 tag bit of their allocation index.
+            let (page_size_1, default_page_size): (SmallVec<[_; 1]>, SmallVec<[_; 1]>) = self
+                .memories
+                .into_iter()
+                .map(|(allocation_index, image, bytes_resident)| {
+                    // Note that for memory images the images are all dropped
+                    // here and ignored if any decommits failed. This signifies
+                    // how the state of the slot is unknown and needs to be
+                    // paved over in the future. Also note that
+                    // `bytes_resident` is probably too low, but there's no
+                    // other precise way to know, so it's left here as-is and
+                    // it'll get reset when the slot is reused.
+                    let image = if decommit_succeeded {
+                        Some(image)
+                    } else {
+                        None
+                    };
+                    (allocation_index, image, bytes_resident)
+                })
+                .partition(|(allocation_index, _, _)| allocation_index.is_page_size_1());
             unsafe {
-                pool.memories.deallocate_many(self.memories.into_iter().map(
-                    |(allocation_index, image, bytes_resident)| {
-                        // Note that for memory images the images are all dropped
-                        // here and ignored if any decommits failed. This signifies
-                        // how the state of the slot is unknown and needs to be
-                        // paved over in the future. Also note that
-                        // `bytes_resident` is probably too low, but there's no
-                        // other precise way to know, so it's left here as-is and
-                        // it'll get reset when the slot is reused.
-                        let image = if decommit_succeeded {
-                            Some(image)
-                        } else {
-                            None
-                        };
-                        (allocation_index, image, bytes_resident)
-                    },
-                ));
+                if !default_page_size.is_empty() {
+                    pool.default_page_size_memories
+                        .deallocate_many(default_page_size.into_iter());
+                }
+                if !page_size_1.is_empty() {
+                    pool.page_size_1_memories
+                        .as_ref()
+                        .expect("tagged as page-size-1 but no page-size-1 pool")
+                        .deallocate_many(page_size_1.into_iter().map(
+                            |(allocation_index, image, bytes_resident)| {
+                                (allocation_index.without_tag(), image, bytes_resident)
+                            },
+                        ));
+                }
             }
         }
         if !self.tables.is_empty() {

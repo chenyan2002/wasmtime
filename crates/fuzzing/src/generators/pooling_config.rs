@@ -10,14 +10,17 @@ pub struct PoolingAllocationConfig {
     pub total_component_instances: u32,
     pub total_core_instances: u32,
     pub total_memories: u32,
+    pub total_page_size_1_memories: u32,
     pub total_tables: u32,
     pub total_stacks: u32,
 
     pub max_memory_size: usize,
+    pub max_page_size_1_memory_size: usize,
     pub table_elements: usize,
 
     pub component_instance_size: usize,
     pub max_memories_per_component: u32,
+    pub max_page_size_1_memories_per_component: u32,
     pub max_tables_per_component: u32,
 
     pub core_instance_size: usize,
@@ -44,14 +47,18 @@ impl PoolingAllocationConfig {
         cfg.opts.pooling_total_component_instances = Some(self.total_component_instances);
         cfg.opts.pooling_total_core_instances = Some(self.total_core_instances);
         cfg.opts.pooling_total_memories = Some(self.total_memories);
+        cfg.opts.pooling_total_page_size_1_memories = Some(self.total_page_size_1_memories);
         cfg.opts.pooling_total_tables = Some(self.total_tables);
         cfg.opts.pooling_total_stacks = Some(self.total_stacks);
 
         cfg.opts.pooling_max_memory_size = Some(self.max_memory_size);
+        cfg.opts.pooling_max_page_size_1_memory_size = Some(self.max_page_size_1_memory_size);
         cfg.opts.pooling_table_elements = Some(self.table_elements);
 
         cfg.opts.pooling_max_component_instance_size = Some(self.component_instance_size);
         cfg.opts.pooling_max_memories_per_component = Some(self.max_memories_per_component);
+        cfg.opts.pooling_max_page_size_1_memories_per_component =
+            Some(self.max_page_size_1_memories_per_component);
         cfg.opts.pooling_max_tables_per_component = Some(self.max_tables_per_component);
 
         cfg.opts.pooling_max_core_instance_size = Some(self.core_instance_size);
@@ -85,19 +92,27 @@ impl<'a> Arbitrary<'a> for PoolingAllocationConfig {
         const MAX_INSTANCE_TABLES: u32 = 10;
 
         let total_memories = u.int_in_range(1..=MAX_MEMORIES)?;
+        let total_page_size_1_memories = u.int_in_range(0..=(MAX_MEMORIES - total_memories))?;
 
         Ok(Self {
             total_component_instances: u.int_in_range(1..=MAX_COUNT)?,
             total_core_instances: u.int_in_range(1..=MAX_COUNT)?,
             total_memories,
+            total_page_size_1_memories,
             total_tables: u.int_in_range(1..=MAX_TABLES)?,
             total_stacks: u.int_in_range(1..=MAX_COUNT)?,
 
             max_memory_size: u.int_in_range(0..=MAX_MEMORY_SIZE)?,
+            max_page_size_1_memory_size: u.int_in_range(0..=MAX_MEMORY_SIZE)?,
             table_elements: u.int_in_range(0..=MAX_ELEMENTS)?,
 
             component_instance_size: u.int_in_range(0..=MAX_SIZE)?,
             max_memories_per_component: u.int_in_range(1..=MAX_INSTANCE_MEMORIES)?,
+            max_page_size_1_memories_per_component: if total_page_size_1_memories > 0 {
+                u.int_in_range(1..=MAX_INSTANCE_MEMORIES)?
+            } else {
+                0
+            },
             max_tables_per_component: u.int_in_range(1..=MAX_INSTANCE_TABLES)?,
 
             core_instance_size: u.int_in_range(0..=MAX_SIZE)?,
